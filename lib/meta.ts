@@ -1,63 +1,71 @@
-import { Analysis, Hazard } from "./types";
+import OpenAI from "openai";
+import { parseImageStream, recordsOfKind, decodeMaskToSVGPath } from "@meta-sam/parser";
+import type { Analysis, Hazard } from "./types";
 
-// Meta Model API — https://api.meta.ai/v1 (Responses API: POST /v1/responses { model, input })
-const BASE = process.env.MODEL_API_BASE || "https://api.meta.ai/v1";
+// Meta Model API — docs: https://dev.meta.ai/docs/sam/segmenting , /reading-segmentation , /client-libraries
+const client = () => new OpenAI({ baseURL: process.env.MODEL_API_BASE || "https://api.meta.ai/v1", apiKey: process.env.MODEL_API_KEY });
 export const SEGMENT_MODEL = process.env.SEGMENT_MODEL || "sam-3.1";
 export const PLAN_MODEL = process.env.PLAN_MODEL || "muse-spark-1.3";
-const PROMPTS = ["pothole", "open manhole", "broken slab", "vendor stall blocking footpath", "construction debris", "exposed wire", "waterlogging"];
 
-async function responses(body: Record<string, unknown>) {
-  const r = await fetch(`${BASE}/responses`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${process.env.MODEL_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+/** One short noun phrase per request (SAM concept prompts: no "and"/"or", negation, or spatial phrasing). */
+export const CONCEPTS: { prompt: string; label: string; labelBn: string; base: "high" | "medium" }[] = [
+  { prompt: "pothole", label: "Pothole", labelBn: "গর্ত", base: "high" },
+  { prompt: "open manhole", label: "Open drain / manhole", labelBn: "খোলা ড্রেন / ম্যানহোল", base: "high" },
+  { prompt: "broken paving slab", label: "Broken slab", labelBn: "ভাঙা স্ল্যাব", base: "medium" },
+  { prompt: "street vendor stall", label: "Vendor stall", labelBn: "হকারের দোকান", base: "medium" },
+  { prompt: "construction debris", label: "Debris", labelBn: "নির্মাণ ময়লা", base: "medium" },
+  { prompt: "exposed electrical wire", label: "Exposed wire", labelBn: "খোলা বৈদ্যুতিক তার", base: "high" },
+];
+
+/** Run one streamed SAM 3.1 request for a single concept and convert records to hazards. */
+async function segmentConcept(oa: OpenAI, image: string, c: (typeof CONCEPTS)[number], frame: { w: number; h: number }) {
+  const stream = await oa.responses.create({
+    model: SEGMENT_MODEL,
+    stream: true,
+    input: [{ type: "message", role: "user", content: [
+      { type: "input_text", text: c.prompt },
+      { type: "input_image", image_url: image, detail: "auto" },
+    ] }],
+    metadata: { include_confidence: "true" },
+  } as any);
+  const result = await parseImageStream(stream as unknown as AsyncIterable<{ type: string }>).finalResult;
+  const boxes = new Map(recordsOfKind(result.records, "box").map(b => [b.objectId, b]));
+  return recordsOfKind(result.records, "mask").map<Hazard>(m => {
+    const b = boxes.get(m.objectId);
+    const score = m.confidence ?? b?.confidence ?? 0.9;
+    return {
+      id: `${c.prompt}-${m.objectId}`, concept: c.prompt, label: c.label, labelBn: c.labelBn,
+      severity: c.base === "high" ? (score >= 0.5 ? "high" : "medium") : score >= 0.8 ? "medium" : "low",
+      score,
+      path: decodeMaskToSVGPath(m.mask),
+      pathScale: [frame.w / m.mask.width, frame.h / m.mask.height],
+      box: b ? [b.left, b.top, b.right, b.bottom] : undefined,
+    };
   });
-  if (!r.ok) throw new Error(`/responses (${body.model}) ${r.status}: ${(await r.text()).slice(0, 300)}`);
-  return r.json();
 }
 
-/** Extract concatenated output text from a Responses API result. */
 function outputText(res: any): string {
   if (typeof res.output_text === "string") return res.output_text;
   return (res.output || []).flatMap((o: any) => o.content || []).map((c: any) => c.text || "").join("");
 }
 
-/** Best-effort mask extraction: the segmentation guide was not publicly reachable,
- *  so we accept structured mask items or a JSON text payload. Anything else -> throw -> mock fallback. */
-function parseMasks(res: any): any[] {
-  const items = (res.output || []).flatMap((o: any) => [o, ...(o.content || [])]);
-  const structured = items.flatMap((c: any) => c.masks || c.segments || (c.type?.includes("mask") ? [c] : []));
-  if (structured.length) return structured;
-  const t = outputText(res).replace(/^```(json)?|```$/g, "").trim();
-  const j = JSON.parse(t);
-  return Array.isArray(j) ? j : j.masks || j.segments || [];
-}
+export async function liveAnalysis(image: string, ward: string, frame: { w: number; h: number }): Promise<Analysis> {
+  const oa = client();
+  // 1) SAM 3.1 — one request per hazard concept, run in parallel, merged for the UI
+  const settled = await Promise.allSettled(CONCEPTS.map(c => segmentConcept(oa, image, c, frame)));
+  const hazards = settled.flatMap(s => (s.status === "fulfilled" ? s.value : []));
+  const warnings = settled.flatMap((s, i) => (s.status === "rejected" ? [`${CONCEPTS[i].prompt}: ${String(s.reason?.message || s.reason).slice(0, 200)}`] : []));
+  if (warnings.length === CONCEPTS.length) throw new Error(`SAM 3.1 failed for all concepts — ${warnings[0]}`);
 
-export async function liveAnalysis(imageDataUrl: string, ward: string): Promise<Analysis> {
-  // 1) SAM 3.1 media segmentation via Responses API
-  const seg = await responses({
-    model: SEGMENT_MODEL,
-    input: [{ role: "user", content: [
-      { type: "input_image", image_url: imageDataUrl },
-      { type: "input_text", text: `Segment these concepts: ${PROMPTS.join(", ")}. Return masks with label, score and polygon [[x,y],...] in a 640x420 frame.` },
-    ] }],
-  });
-  const hazards: Hazard[] = parseMasks(seg).map((m: any, i: number) => {
-    const score = Number(m.score ?? m.confidence ?? 0.8);
-    return { id: `h${i + 1}`, label: m.label || m.concept || "hazard", labelBn: m.label || "বিপদ",
-      severity: score > 0.85 ? "high" : score > 0.6 ? "medium" : "low", score, polygon: m.polygon || m.points || [] };
-  });
-
-  // 2) Muse Spark 1.3 bilingual plan + ward report via Responses API
-  const plan = await responses({
+  // 2) Muse Spark 1.3 — bilingual plan + ward report via Responses API
+  const plan = await oa.responses.create({
     model: PLAN_MODEL,
-    instructions: "You are PothChol, a Dhaka sidewalk safety copilot. Reply ONLY JSON {planBn, planEn, wardReport, labelsBn:{[english]:bangla}}. wardReport is a formal Bangla letter to the ward councillor.",
-    input: [{ role: "user", content: [
-      { type: "input_text", text: `Ward: ${ward}. Hazards: ${JSON.stringify(hazards.map(h => ({ label: h.label, score: h.score })))}` },
-      { type: "input_image", image_url: imageDataUrl },
+    instructions: "You are PothChol, a Dhaka sidewalk safety copilot. Reply ONLY JSON {planBn, planEn, wardReport}. wardReport is a formal Bangla letter to the ward councillor.",
+    input: [{ type: "message", role: "user", content: [
+      { type: "input_text", text: `Ward: ${ward}. Detected hazards: ${JSON.stringify(hazards.map(h => ({ hazard: h.label, confidence: +h.score.toFixed(2), box: h.box })))}` },
+      { type: "input_image", image_url: image, detail: "auto" },
     ] }],
-  });
-  const out = JSON.parse(outputText(plan).replace(/^```(json)?|```$/g, "").trim());
-  hazards.forEach(h => (h.labelBn = out.labelsBn?.[h.label] || h.labelBn));
-  return { mode: "live", hazards, planBn: out.planBn, planEn: out.planEn, wardReport: out.wardReport };
+  } as any);
+  const out = JSON.parse(outputText(plan).replace(/^\s*```(json)?|```\s*$/g, "").trim());
+  return { mode: "live", frame, hazards, planBn: out.planBn, planEn: out.planEn, wardReport: out.wardReport, warnings };
 }

@@ -13,12 +13,17 @@ All calls go to the Meta Model API, base URL `https://api.meta.ai/v1`, using the
 
 | Step | Model ID | Endpoint |
 |---|---|---|
-| Hazard segmentation (concept prompts: pothole, open manhole, vendor stall…) | `sam-3.1` (SAM 3.1) | `POST /v1/responses` |
+| Hazard segmentation (concept prompts: pothole, open manhole, vendor stall…) | `sam-3.1` (SAM 3.1) | `POST /v1/responses` (streamed, one concept per request) |
 | Bilingual plan + ward report (vision + text) | `muse-spark-1.3` (Muse Spark) | `POST /v1/responses` |
 
 Model IDs can be overridden via `SEGMENT_MODEL` / `PLAN_MODEL` in `.env.local`.
 
-> **Note on SAM 3.1 output:** the official media-segmentation guide (dev.meta.ai/docs/guides/media-segmentation) was not reachable when this was built, so `lib/meta.ts` parses masks defensively (structured mask items or JSON text). If parsing or any call fails, the API route falls back to mock data and shows the error in the UI.
+### How segmentation works ([SAM docs](https://dev.meta.ai/docs/sam/overview))
+- `POST /v1/responses`, `model: "sam-3.1"`, `stream: true`, with a user message holding `input_text` (one short noun-phrase concept) and `input_image` (the uploaded photo as a data URL). See [segmenting](https://dev.meta.ai/docs/sam/segmenting).
+- SAM accepts **one concept per request**, so PothChol sends six requests in parallel: `pothole`, `open manhole`, `broken paving slab`, `street vendor stall`, `construction debris`, `exposed electrical wire`. The masks are merged for the overlay.
+- The streamed `output_text` uses SAM's special-token grammar (`<0f>id<|box;…|><|mask;…|>`, see [reading segmentation](https://dev.meta.ai/docs/sam/reading-segmentation)). It is parsed with [`@meta-sam/parser`](https://dev.meta.ai/docs/sam/client-libraries) `parseImageStream`, and masks are rendered as SVG paths via `decodeMaskToSVGPath`.
+- If some concepts fail, the rest still render and the failures show as warnings. If all fail, or Muse Spark fails, the app falls back to mock data and shows the error.
+- Needs Node `^20.17` or `>=22.9` (a requirement of `@meta-sam/parser`).
 
 > **Billing:** Meta's Model API may require a payment card on your Meta billing account before the first call succeeds. Without one (or without `MODEL_API_KEY`) PothChol runs in mock mode.
 
@@ -35,7 +40,7 @@ Click **বিশ্লেষণ করুন** with the sample image (mock) or 
 ## Structure
 - `app/page.tsx` — upload UI, mask overlay, plan & report
 - `app/api/analyze/route.ts` — mock / live switch
-- `lib/meta.ts` — SAM 3.1 + Muse Spark calls
+- `lib/meta.ts` — SAM 3.1 (streamed, per concept, `@meta-sam/parser`) + Muse Spark 1.3 calls via the `openai` SDK pointed at the Meta base URL
 - `lib/mock.ts` — mock data
 
 Secrets are never committed; only `.env.example` is tracked.

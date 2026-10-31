@@ -5,11 +5,12 @@ const color = { high: "rgba(220,38,38,.45)", medium: "rgba(234,179,8,.45)", low:
 export default function Home() {
   const [img, setImg] = useState<string>("/sample-sidewalk.svg");
   const [data, setData] = useState<string | null>(null);
+  const [dims, setDims] = useState({ width: 640, height: 420 });
   const [ward, setWard] = useState("Ward 7 (Mirpur, DNCC)");
   const [res, setRes] = useState<Analysis | null>(null);
   const [busy, setBusy] = useState(false);
-  const onFile = (f?: File) => { if (!f) return; const r = new FileReader(); r.onload = () => { setImg(r.result as string); setData(r.result as string); setRes(null); }; r.readAsDataURL(f); };
-  const analyze = async () => { setBusy(true); const r = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image: data, ward }) }); setRes(await r.json()); setBusy(false); };
+  const onFile = (f?: File) => { if (!f) return; const r = new FileReader(); r.onload = () => { const u = r.result as string; setImg(u); setData(u); setRes(null); const im = new Image(); im.onload = () => setDims({ width: im.naturalWidth, height: im.naturalHeight }); im.src = u; }; r.readAsDataURL(f); };
+  const analyze = async () => { setBusy(true); const r = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image: data, ward, ...dims }) }); setRes(await r.json()); setBusy(false); };
   return (
     <main style={{ maxWidth: 900, margin: "0 auto", padding: 24 }}>
       <h1>পথচল · PothChol</h1>
@@ -22,13 +23,18 @@ export default function Home() {
       <div style={{ position: "relative", marginTop: 16, width: 640, maxWidth: "100%" }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={img} alt="sidewalk" style={{ width: "100%", display: "block" }} />
-        {res && <svg viewBox="0 0 640 420" style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} preserveAspectRatio="none">
-          {res.hazards.map(h => <g key={h.id}><polygon points={h.polygon.map(p => p.join(",")).join(" ")} fill={color[h.severity]} stroke="#111" strokeWidth={2} />
-            {h.polygon[0] && <text x={h.polygon[0][0]} y={h.polygon[0][1] - 6} fontSize={16} fill="#111">{h.labelBn}</text>}</g>)}
+        {res && <svg viewBox={`0 0 ${res.frame.w} ${res.frame.h}`} style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} preserveAspectRatio="none">
+          {res.hazards.map(h => {
+            const lx = h.box ? h.box[0] : h.polygon?.[0]?.[0] ?? 0, ly = h.box ? h.box[1] : h.polygon?.[0]?.[1] ?? 0;
+            return <g key={h.id}>
+              {h.path ? <path d={h.path} transform={`scale(${h.pathScale?.[0] ?? 1} ${h.pathScale?.[1] ?? 1})`} fill={color[h.severity]} stroke="#111" strokeWidth={1} vectorEffect="non-scaling-stroke" fillRule="evenodd" />
+                : <polygon points={(h.polygon || []).map(p => p.join(",")).join(" ")} fill={color[h.severity]} stroke="#111" strokeWidth={2} />}
+              <text x={lx} y={Math.max(14, ly - 6)} fontSize={Math.max(14, res.frame.w / 40)} fill="#111">{h.labelBn}</text></g>;
+          })}
         </svg>}
       </div>
       {res && <section>
-        <p><small>Mode: {res.mode}{(res as any).error ? ` (fallback: ${(res as any).error})` : ""}</small></p>
+        <p><small>Mode: {res.mode}{res.error ? ` (fallback: ${res.error})` : ""}{res.warnings?.length ? ` · warnings: ${res.warnings.join("; ")}` : ""}</small></p>
         <h2>বিপদসমূহ</h2>
         <ul>{res.hazards.map(h => <li key={h.id}>{h.labelBn} / {h.label} — {h.severity} ({Math.round(h.score * 100)}%)</li>)}</ul>
         <h2>নিরাপদ চলার পরিকল্পনা</h2><p>{res.planBn}</p><p><em>{res.planEn}</em></p>
