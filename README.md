@@ -23,6 +23,8 @@ Model IDs can be overridden via `SEGMENT_MODEL` / `PLAN_MODEL` in `.env.local`.
 - SAM accepts **one concept per request**, so PothChol sends six requests in parallel: `pothole`, `open manhole`, `broken paving slab`, `street vendor stall`, `construction debris`, `exposed electrical wire`. The masks are merged for the overlay.
 - The streamed `output_text` uses SAM's special-token grammar (`<0f>id<|box;…|><|mask;…|>`, see [reading segmentation](https://dev.meta.ai/docs/sam/reading-segmentation)). It is parsed with [`@meta-sam/parser`](https://dev.meta.ai/docs/sam/client-libraries) `parseImageStream`, and masks are rendered as SVG paths via `decodeMaskToSVGPath`.
 - If some concepts fail, the rest still render and the failures show as warnings. If all fail, or Muse Spark fails, the app falls back to mock data and shows the error.
+- Muse Spark plan call uses `reasoning.effort: "low"` (override with `PLAN_REASONING_EFFORT`) for cheaper, faster demos. See [reasoning](https://dev.meta.ai/docs/reasoning).
+- SAM mask rasters cover only the object's box (`bounds`), so the SVG path is translated/scaled into the box.
 - Needs Node `^20.17` or `>=22.9` (a requirement of `@meta-sam/parser`).
 
 > **Billing:** Meta's Model API may require a payment card on your Meta billing account before the first call succeeds. Without one (or without `MODEL_API_KEY`) PothChol runs in mock mode.
@@ -35,7 +37,7 @@ npm install
 cp .env.example .env.local   # optional: add MODEL_API_KEY for live mode
 npm run dev                  # http://localhost:3000
 ```
-Click **বিশ্লেষণ করুন** with the sample image (mock) or upload your own photo.
+Click **বিশ্লেষণ করুন** with the sample image (`public/sample-sidewalk.jpg`, [Potholes in Bengaluru road](https://commons.wikimedia.org/wiki/File:Potholes_in_Bengaluru_road.jpg), CC0, Wikimedia Commons) (mock) or upload your own photo.
 
 ## Structure
 - `app/page.tsx` — upload UI, mask overlay, plan & report

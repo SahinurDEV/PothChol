@@ -38,7 +38,8 @@ async function segmentConcept(oa: OpenAI, image: string, c: (typeof CONCEPTS)[nu
       severity: c.base === "high" ? (score >= 0.5 ? "high" : "medium") : score >= 0.8 ? "medium" : "low",
       score,
       path: decodeMaskToSVGPath(m.mask),
-      pathScale: [frame.w / m.mask.width, frame.h / m.mask.height],
+      // The mask raster covers only m.bounds (source pixels), not the whole frame.
+      pathTransform: `translate(${m.bounds.left} ${m.bounds.top}) scale(${(m.bounds.right - m.bounds.left) / m.mask.width} ${(m.bounds.bottom - m.bounds.top) / m.mask.height})`,
       box: b ? [b.left, b.top, b.right, b.bottom] : undefined,
     };
   });
@@ -60,6 +61,8 @@ export async function liveAnalysis(image: string, ward: string, frame: { w: numb
   // 2) Muse Spark 1.3 — bilingual plan + ward report via Responses API
   const plan = await oa.responses.create({
     model: PLAN_MODEL,
+    // Docs: https://dev.meta.ai/docs/reasoning — "low" is cheaper/faster for this formatting-style task; "none" is rejected by Muse Spark.
+    reasoning: { effort: process.env.PLAN_REASONING_EFFORT || "low" },
     instructions: "You are PothChol, a Dhaka sidewalk safety copilot. Reply ONLY JSON {planBn, planEn, wardReport}. wardReport is a formal Bangla letter to the ward councillor.",
     input: [{ type: "message", role: "user", content: [
       { type: "input_text", text: `Ward: ${ward}. Detected hazards: ${JSON.stringify(hazards.map(h => ({ hazard: h.label, confidence: +h.score.toFixed(2), box: h.box })))}` },
