@@ -9,12 +9,20 @@ Dhaka's footpaths are a daily obstacle course: open manholes, potholes hidden un
 3. **A ready-to-send ward report** — a formal Bangla letter to the ward councillor (DNCC/DSCC) listing the hazards.
 
 ## Models
-| Step | Model | Via |
-|---|---|---|
-| Hazard segmentation (concept prompts: pothole, open manhole, vendor stall…) | **SAM 3.1** | `https://api.meta.ai/v1/segment` |
-| Bilingual plan + ward report (vision + text) | **Muse Spark** | `https://api.meta.ai/v1/chat/completions` |
+All calls go to the Meta Model API, base URL `https://api.meta.ai/v1`, using the **Responses API** (`POST /v1/responses` with `{ model, input }`).
 
-Without `MODEL_API_KEY` the app runs in **mock mode**: sample sidewalk image, fake masks and a canned Bangla summary — so judges can demo it offline.
+| Step | Model ID | Endpoint |
+|---|---|---|
+| Hazard segmentation (concept prompts: pothole, open manhole, vendor stall…) | `sam-3.1` (SAM 3.1) | `POST /v1/responses` |
+| Bilingual plan + ward report (vision + text) | `muse-spark-1.3` (Muse Spark) | `POST /v1/responses` |
+
+Model IDs can be overridden via `SEGMENT_MODEL` / `PLAN_MODEL` in `.env.local`.
+
+> **Note on SAM 3.1 output:** the official media-segmentation guide (dev.meta.ai/docs/guides/media-segmentation) was not reachable when this was built, so `lib/meta.ts` parses masks defensively (structured mask items or JSON text). If parsing or any call fails, the API route falls back to mock data and shows the error in the UI.
+
+> **Billing:** Meta's Model API may require a payment card on your Meta billing account before the first call succeeds. Without one (or without `MODEL_API_KEY`) PothChol runs in mock mode.
+
+**Mock mode:** without `MODEL_API_KEY` the app uses a sample sidewalk image, fake masks and a canned Bangla summary — so judges can demo it offline.
 
 ## Run
 ```bash
